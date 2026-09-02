@@ -1,66 +1,362 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Pay-in & Payout Module (Laravel)
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A backend-focused Laravel module implementing merchant pay-in/payout initiation,
+a scheduled job that randomly resolves pending payments (SUCCESS / FAILED /
+PENDING), wallet ledger accounting, and a Bootstrap-based admin panel with
+filters.
 
-## About Laravel
+> This repo ships **only the application-specific code** (`app/`, selected
+> `database/`, `resources/views/`, `routes/`) that plugs into a fresh Laravel
+> installation. This keeps the deliverable focused on the actual assignment
+> (business logic, DB design, services, cron) instead of thousands of
+> unmodified framework boilerplate files. See **Setup** below for exactly how
+> to merge it in — it takes about 2 minutes.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+---
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## 1. Architecture at a Glance
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+```
+app/
+├── Console/
+│   ├── Commands/ProcessPendingPayments.php   # artisan payments:process-pending
+│   └── Kernel.php                            # schedules the command every minute
+├── Exceptions/InsufficientBalanceException.php
+├── Helpers/TransactionIdHelper.php           # guaranteed-unique transaction IDs
+├── Http/
+│   ├── Controllers/
+│   │   ├── Api/{Merchant,Payin,Payout,Wallet}Controller.php   # JSON API
+│   │   └── {Merchant,Payin,Payout,Wallet}Controller.php       # Blade admin panel
+│   ├── Middleware/AuthenticateMerchant.php   # X-API-KEY auth for the API
+│   └── Requests/                             # Form Request validation
+├── Models/                                   # Merchant, Wallet, WalletTransaction,
+│                                              # Payin, Payout, PaymentLog
+└── Services/
+    ├── PayinService.php                      # initiate + list pay-ins
+    ├── PayoutService.php                     # initiate + list payouts (+ balance check)
+    ├── WalletService.php                     # ALL balance mutations go through here
+    ├── PaymentProcessingService.php          # the cron's core logic
+    └── PaymentLogger.php                     # writes to payment_logs table + laravel.log
 
-## Learning Laravel
+database/migrations/                          # 6 migrations, see section 2
+database/seeders/MerchantSeeder.php           # 2 demo merchants + wallets
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+resources/views/                              # Bootstrap 5 admin panel (merchants,
+                                               # payins, payouts, wallets) with filters
 
-You may also try the [Laravel Bootcamp](https://bootcamp.laravel.com), where you will be guided through building a modern Laravel application from scratch.
+routes/{web,api,console}.php
+```
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+**Controllers stay thin.** All business logic (transaction ID generation,
+status transitions, wallet debits/credits, validation of business rules like
+"sufficient balance") lives in `app/Services`, `app/Helpers` and Form
+Requests — never directly in controllers.
 
-## Laravel Sponsors
+---
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+## 2. Database Design
 
-### Premium Partners
+| Table                | Purpose                                                                 |
+|-----------------------|--------------------------------------------------------------------------|
+| `merchants`           | Merchant identity + `api_key` (unique) used for API auth + status      |
+| `wallets`              | One-to-one with merchant. Holds the current `balance` (source of truth)|
+| `payins`               | Pay-in requests: `transaction_id` (unique), amount, `status`, customer details (JSON) |
+| `payouts`              | Payout requests: `transaction_id` (unique), amount, `status`, beneficiary details (JSON) |
+| `wallet_transactions`  | Immutable ledger of every balance change (CREDIT/DEBIT) with `balance_before`/`balance_after` |
+| `payment_logs`         | Structured event log: INITIATED, CRON_CHECK, PROCESSED, ERROR, etc.    |
 
-- **[Vehikl](https://vehikl.com/)**
-- **[Tighten Co.](https://tighten.co)**
-- **[WebReinvent](https://webreinvent.com/)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel/)**
-- **[Cyber-Duck](https://cyber-duck.co.uk)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Jump24](https://jump24.co.uk)**
-- **[Redberry](https://redberry.international/laravel/)**
-- **[Active Logic](https://activelogic.com)**
-- **[byte5](https://byte5.de)**
-- **[OP.GG](https://op.gg)**
+**Relationships**
 
-## Contributing
+* `Merchant hasOne Wallet`, `hasMany Payin`, `hasMany Payout`, `hasMany WalletTransaction`
+* `Payin/Payout belongsTo Merchant`
+* `WalletTransaction belongsTo Wallet, Merchant`
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+**Key constraints**
 
-## Code of Conduct
+* `merchants.email`, `merchants.api_key` → unique
+* `payins.transaction_id`, `payouts.transaction_id` → unique
+* `wallets.merchant_id` → unique (enforces one wallet per merchant)
+* **`wallet_transactions(reference_type, reference_id)` → unique** — this is
+  the constraint that makes double-processing structurally impossible (see
+  section 4).
+* Indexes on `(merchant_id, status)` and `(status, created_at)` on both
+  `payins` and `payouts` to keep cron polling and admin-panel filtering fast.
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+---
 
-## Security Vulnerabilities
+## 3. Payment Flow (Pay-in / Payout)
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+1. Merchant calls `POST /api/v1/payins` (or `/payouts`) with `X-API-KEY` header.
+2. `AuthenticateMerchant` middleware resolves + validates the merchant.
+3. A Form Request (`StorePayinRequest` / `StorePayoutRequest`) validates
+   amount, currency, customer/beneficiary fields.
+4. `PayinService::initiate()` / `PayoutService::initiate()`:
+   * generates a unique transaction ID via `TransactionIdHelper` (format:
+     `PIN20260902AB12CD34EF` / `POT20260902AB12CD34EF`),
+   * persists the record with `status = PENDING`,
+   * writes an `INITIATED` entry via `PaymentLogger` (DB + log file).
+5. Response returns the `transaction_id` and `status: PENDING` immediately —
+   processing is asynchronous, via the cron.
 
-## License
+**Payouts only**: `PayoutService::initiate()` performs an up-front balance
+check (`WalletService::hasSufficientBalance`) and rejects the request with
+`422` if the wallet can't cover the amount — this saves creating payouts
+that could never succeed.
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+---
+
+## 4. The Cron / Scheduler (core of the assignment)
+
+**Command:** `php artisan payments:process-pending`
+**Scheduled:** every minute, via `app/Console/Kernel.php`
+(`->everyMinute()->withoutOverlapping()->runInBackground()`).
+
+For every row currently `PENDING` in `payins` and `payouts`:
+
+1. It is re-fetched **inside its own DB transaction with `lockForUpdate()`**
+   and its status is re-checked. If it's no longer `PENDING` (already picked
+   up by a concurrent run), it is skipped — this is the first
+   duplicate-processing guard.
+2. A random status is drawn from `[SUCCESS, FAILED, PENDING]`.
+3. **PENDING** → nothing changes; the row is picked up again on the next run
+   automatically (we simply always query for `status = PENDING`, so there's
+   no separate "retry queue" to maintain).
+4. **SUCCESS** → status updated, `processed_at` stamped, and
+   `WalletService::creditForPayin()` / `debitForPayout()` is called.
+5. **FAILED** → status + `failure_reason` updated, wallet untouched.
+
+**Why the wallet can never be double-credited/debited (second guard):**
+`WalletService` writes a `WalletTransaction` row with
+`reference_type = 'payin'|'payout'` and `reference_id = <payin/payout id>`.
+The `wallet_transactions` table has a **unique DB constraint** on
+`(reference_type, reference_id)`. Even if the service method were somehow
+invoked twice for the same payment (a bug, a re-run, a race condition that
+slips past the row lock), the second `INSERT` fails / is caught and short-
+circuited before the balance is touched a second time. This makes "same
+payment cannot be processed/deducted twice" a database-level guarantee, not
+just an application-level convention.
+
+For payouts specifically: if the wallet balance dropped below the payout
+amount between initiation and processing (e.g. another payout drained it),
+`WalletService::debitForPayout()` throws `InsufficientBalanceException` and
+the payout is force-marked `FAILED` with that reason, rather than allowing a
+negative balance.
+
+Run it manually any time with:
+```bash
+php artisan payments:process-pending
+# optional: process in smaller/larger batches
+php artisan payments:process-pending --batch=50
+```
+
+---
+
+## 5. Setup Instructions
+
+### Prerequisites
+PHP 8.2+, Composer, MySQL (or SQLite for a quick trial).
+
+### Step 1 — Create a fresh Laravel app
+```bash
+composer create-project laravel/laravel payin-payout-app "^10.0"
+cd payin-payout-app
+```
+
+### Step 2 — Merge this module in
+Copy/overwrite the following folders from this repo into the new project
+(they will not conflict with anything in a fresh install, aside from the two
+files noted below which **replace** the stock ones):
+
+```bash
+cp -r app/*        payin-payout-app/app/
+cp -r database/migrations/*  payin-payout-app/database/migrations/
+cp -r database/seeders/*     payin-payout-app/database/seeders/
+cp -r resources/views/*      payin-payout-app/resources/views/
+cp routes/web.php     payin-payout-app/routes/web.php
+cp routes/api.php     payin-payout-app/routes/api.php
+```
+
+> `app/Http/Kernel.php` and `app/Console/Kernel.php` in this repo **replace**
+> the stock files — they only add the `auth.merchant` middleware alias and
+> the scheduler entry on top of Laravel's defaults, nothing else was removed.
+> If you're on Laravel 11 (which restructured `bootstrap/app.php` and removed
+> the two Kernel files), instead:
+> * register the command's schedule in `bootstrap/app.php` under `->withSchedule()`
+> * register `'auth.merchant' => \App\Http\Middleware\AuthenticateMerchant::class` under `->withMiddleware()`
+> * everything else (Models, Services, Controllers, Requests, migrations, views, routes) works unchanged.
+
+### Step 3 — Environment & database
+```bash
+cp .env.example .env
+php artisan key:generate
+```
+Edit `.env` with your DB credentials (see `.env.example.snippet` in this
+repo for the relevant keys), then:
+```bash
+php artisan migrate
+php artisan db:seed --class=MerchantSeeder
+```
+The seeder prints two demo merchants with their `api_key` and opening wallet
+balance straight to the console — copy one for the API calls below.
+
+### Step 4 — Run it
+```bash
+php artisan serve
+```
+Visit `http://localhost:8000` for the admin panel (merchants, pay-ins,
+payouts, wallets, all with filters).
+
+### Step 5 — Run the cron
+For local testing, run it on demand:
+```bash
+php artisan payments:process-pending
+```
+For continuous processing (mirrors production), run Laravel's scheduler
+loop in a separate terminal:
+```bash
+php artisan schedule:work
+```
+In production, add a single system cron entry instead:
+```
+* * * * * cd /path/to/payin-payout-app && php artisan schedule:run >> /dev/null 2>&1
+```
+
+---
+
+## 6. API Documentation & Sample Requests
+
+Base URL: `http://localhost:8000/api/v1`
+Auth: header `X-API-KEY: <merchant api_key>` on every route except merchant
+registration.
+
+### 6.1 Register a merchant (public)
+```bash
+curl -X POST http://localhost:8000/api/v1/merchants \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Acme Retail Pvt Ltd",
+    "email": "acme@example.com",
+    "phone": "9999999999"
+  }'
+```
+```json
+{
+  "success": true,
+  "message": "Merchant registered successfully. Store the api_key securely - it will not be shown again.",
+  "data": { "id": 3, "name": "Acme Retail Pvt Ltd", "email": "acme@example.com", "api_key": "6QowJ...redacted...aB" }
+}
+```
+
+### 6.2 Initiate a Pay-in
+```bash
+curl -X POST http://localhost:8000/api/v1/payins \
+  -H "X-API-KEY: <merchant_api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 1500.50,
+    "currency": "INR",
+    "payment_method": "UPI",
+    "customer_name": "Rahul Sharma",
+    "customer_email": "rahul@example.com",
+    "customer_phone": "9876543210",
+    "remarks": "Order #INV-1042"
+  }'
+```
+```json
+{
+  "success": true,
+  "message": "Pay-in initiated successfully.",
+  "data": {
+    "transaction_id": "PIN20260902AB12CD34EF",
+    "status": "PENDING",
+    "amount": "1500.50",
+    "currency": "INR",
+    "created_at": "2026-09-02T10:15:00.000000Z"
+  }
+}
+```
+
+### 6.3 Initiate a Payout
+```bash
+curl -X POST http://localhost:8000/api/v1/payouts \
+  -H "X-API-KEY: <merchant_api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 2000,
+    "currency": "INR",
+    "payout_method": "IMPS",
+    "beneficiary_name": "Priya Verma",
+    "beneficiary_account_number": "123456789012",
+    "beneficiary_ifsc": "HDFC0001234",
+    "beneficiary_bank_name": "HDFC Bank",
+    "remarks": "Vendor settlement"
+  }'
+```
+Returns `422` with `{"success": false, "message": "..."}` if the merchant's
+wallet balance is insufficient.
+
+### 6.4 List / filter Pay-ins or Payouts
+```bash
+curl "http://localhost:8000/api/v1/payins?status=SUCCESS&date_from=2026-09-01&date_to=2026-09-02" \
+  -H "X-API-KEY: <merchant_api_key>"
+```
+
+### 6.5 Get a single Pay-in / Payout by transaction ID
+```bash
+curl http://localhost:8000/api/v1/payins/PIN20260902AB12CD34EF \
+  -H "X-API-KEY: <merchant_api_key>"
+```
+
+### 6.6 Get wallet balance + recent transactions
+```bash
+curl http://localhost:8000/api/v1/wallet -H "X-API-KEY: <merchant_api_key>"
+```
+
+---
+
+## 7. Logging
+
+Every important event is written to **both**:
+* the `payment_logs` table (filterable, queryable, joinable to the source
+  payin/payout via the `loggable_type`/`loggable_id` polymorphic columns), and
+* `storage/logs/laravel.log` (via `Log::info` / `Log::error`), prefixed
+  `[PAYMENT]` / `[PAYMENT ERROR]` for easy `grep`/`tail -f`.
+
+Events logged: `INITIATED` (with the full request payload), `CRON_CHECK`
+(when a row remains PENDING), `PROCESSED` (status change to SUCCESS/FAILED),
+and `ERROR` (e.g. `InsufficientBalanceException` during processing).
+
+---
+
+## 8. Admin Panel
+
+Bootstrap 5 UI, no build step required (CDN assets), covering:
+
+* **Merchants** — list/search/filter by status, create, edit, view detail
+  (wallet balance + recent pay-ins/payouts), delete (blocked if wallet has
+  a non-zero balance).
+* **Pay-ins / Payouts** — list with filters (status, merchant, date range),
+  detail view with full customer/beneficiary JSON rendered.
+* **Wallets** — list of all merchant balances; detail view is a full ledger
+  (`wallet_transactions`) filterable by type and date, showing
+  balance-before/after for a clean audit trail.
+
+---
+
+## 9. Design Decisions / Notes
+
+* **Why a separate `wallet_transactions` ledger instead of just mutating
+  `wallets.balance`?** It gives a full audit trail, makes the
+  double-processing guard possible via the unique constraint, and lets the
+  UI show a proper statement per merchant.
+* **Why check balance both at initiation and at processing time for
+  payouts?** Initiation-time check gives fast feedback to the merchant;
+  processing-time check (inside the locked transaction) is the one that
+  actually matters for correctness, since balance can change between the
+  two moments.
+* **Why Form Requests instead of validating in the controller?** Keeps
+  controllers thin and validation rules reusable/testable in isolation.
+* **Currency** is stored per-record (`payins.currency`, `payouts.currency`,
+  `wallets.currency`) rather than assumed globally, though this project
+  does not implement cross-currency conversion — mixed-currency wallets
+  would need that as a follow-up.
