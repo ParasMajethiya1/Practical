@@ -40,7 +40,7 @@ class Kernel extends HttpKernel
     protected $middlewareAliases = [
         "auth" => \Illuminate\Auth\Middleware\Authenticate::class,
         "auth.merchant" => \App\Http\Middleware\AuthenticateMerchant::class,
-        "guest" => \Illuminate\Auth\Middleware\RedirectIfAuthenticated::class,
+        "guest" => \App\Http\Middleware\RedirectIfAuthenticated::class,
         "throttle" => \Illuminate\Routing\Middleware\ThrottleRequests::class,
     ];
 }

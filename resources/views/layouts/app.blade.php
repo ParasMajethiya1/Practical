@@ -103,6 +103,22 @@
                 <p class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Payout safety</p>
                 <p class="mt-1 text-[12.5px] text-slate-300 leading-snug">Funds are <span class="text-amber-300 font-semibold">held</span> the moment a payout starts, then released or debited once it's processed.</p>
             </div>
+
+            @auth("admin")
+                <div class="flex items-center justify-between gap-2 px-4 py-3 mx-3 mb-5 rounded-xl bg-white/5 border border-white/10">
+                    <div class="min-w-0">
+                        <p class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Signed in as</p>
+                        <p class="text-sm text-white truncate">{{ auth("admin")->user()->name }}</p>
+                    </div>
+                    <form method="POST" action="{{ route("logout") }}">
+                        @csrf
+                        <button type="submit" title="Log out"
+                                class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg text-slate-300 hover:bg-white/10 hover:text-white transition-colors">
+                            <i class="bi bi-box-arrow-right"></i>
+                        </button>
+                    </form>
+                </div>
+            @endauth
         </aside>
 
         <!-- Main -->
@@ -122,6 +138,14 @@
                 <a href="{{ route("payins.index") }}" class="block rounded-lg px-3 py-2 text-sm {{ request()->routeIs("payins.*") ? "bg-white/10 text-white" : "" }}"><i class="bi bi-arrow-down-circle me-2"></i>Pay-ins</a>
                 <a href="{{ route("payouts.index") }}" class="block rounded-lg px-3 py-2 text-sm {{ request()->routeIs("payouts.*") ? "bg-white/10 text-white" : "" }}"><i class="bi bi-arrow-up-circle me-2"></i>Payouts</a>
                 <a href="{{ route("wallets.index") }}" class="block rounded-lg px-3 py-2 text-sm {{ request()->routeIs("wallets.*") ? "bg-white/10 text-white" : "" }}"><i class="bi bi-cash-stack me-2"></i>Wallets</a>
+                @auth("admin")
+                    <form method="POST" action="{{ route("logout") }}" class="pt-1">
+                        @csrf
+                        <button type="submit" class="w-full text-left block rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-white/10 hover:text-white">
+                            <i class="bi bi-box-arrow-right me-2"></i>Log out ({{ auth("admin")->user()->name }})
+                        </button>
+                    </form>
+                @endauth
             </nav>
 
             <main class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto">

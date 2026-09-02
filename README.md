@@ -26,11 +26,12 @@ app/
 ├── Http/
 │   ├── Controllers/
 │   │   ├── Api/{Merchant,Payin,Payout,Wallet}Controller.php   # JSON API
+│   │   ├── Auth/AdminAuthController.php      # /login, /logout for the panel
 │   │   └── {Merchant,Payin,Payout,Wallet}Controller.php       # Blade admin panel
 │   ├── Middleware/AuthenticateMerchant.php   # X-API-KEY auth for the API
 │   └── Requests/                             # Form Request validation
 ├── Models/                                   # Merchant, Wallet, WalletTransaction,
-│                                              # Payin, Payout, PaymentLog
+│                                              # Payin, Payout, PaymentLog, Admin
 └── Services/
     ├── PayinService.php                      # initiate + list pay-ins
     ├── PayoutService.php                     # initiate + list payouts (+ balance check)
@@ -38,11 +39,13 @@ app/
     ├── PaymentProcessingService.php          # the cron's core logic
     └── PaymentLogger.php                     # writes to payment_logs table + laravel.log
 
-database/migrations/                          # 6 migrations, see section 2
+database/migrations/                          # 7 migrations, see section 2
+database/seeders/AdminSeeder.php              # 1 back-office login (see section 8)
 database/seeders/MerchantSeeder.php           # 2 demo merchants + wallets
 
 resources/views/                              # Bootstrap 5 admin panel (merchants,
-                                               # payins, payouts, wallets) with filters
+                                               # payins, payouts, wallets) with filters,
+                                               # + resources/views/auth/login.blade.php
 
 routes/{web,api,console}.php
 ```
@@ -64,6 +67,7 @@ Requests — never directly in controllers.
 | `payouts`              | Payout requests: `transaction_id` (unique), amount, `status`, beneficiary details (JSON) |
 | `wallet_transactions`  | Immutable ledger of every balance change (CREDIT/DEBIT) with `balance_before`/`balance_after` |
 | `payment_logs`         | Structured event log: INITIATED, CRON_CHECK, PROCESSED, ERROR, etc.    |
+| `admins`               | Back-office staff logins (email + hashed password) for the `/login` panel — separate from `merchants` |
 
 **Relationships**
 
@@ -179,10 +183,14 @@ cp routes/api.php     payin-payout-app/routes/api.php
 > `app/Http/Kernel.php` and `app/Console/Kernel.php` in this repo **replace**
 > the stock files — they only add the `auth.merchant` middleware alias and
 > the scheduler entry on top of Laravel's defaults, nothing else was removed.
+> `config/auth.php` also **replaces** the stock file — it keeps every default
+> Laravel guard/provider and only adds the `admin` guard + `admins` provider
+> used to protect the back-office panel (see **Admin Authentication** below).
 > If you're on Laravel 11 (which restructured `bootstrap/app.php` and removed
 > the two Kernel files), instead:
 > * register the command's schedule in `bootstrap/app.php` under `->withSchedule()`
 > * register `'auth.merchant' => \App\Http\Middleware\AuthenticateMerchant::class` under `->withMiddleware()`
+> * add the `admin` guard/`admins` provider from `config/auth.php` into your own copy of that file
 > * everything else (Models, Services, Controllers, Requests, migrations, views, routes) works unchanged.
 
 ### Step 3 — Environment & database
@@ -194,17 +202,25 @@ Edit `.env` with your DB credentials (see `.env.example.snippet` in this
 repo for the relevant keys), then:
 ```bash
 php artisan migrate
-php artisan db:seed --class=MerchantSeeder
+php artisan db:seed
 ```
-The seeder prints two demo merchants with their `api_key` and opening wallet
-balance straight to the console — copy one for the API calls below.
+This runs both seeders (`app/database/seeders/DatabaseSeeder.php` calls
+them in order):
+* `AdminSeeder` creates one back-office login and prints its email +
+  a random generated password to the console — use these at `/login`.
+* `MerchantSeeder` prints two demo merchants with their `api_key` and
+  opening wallet balance — copy one for the API calls below.
+
+(Run `php artisan db:seed --class=AdminSeeder` or `--class=MerchantSeeder`
+if you only want one of them.)
 
 ### Step 4 — Run it
 ```bash
 php artisan serve
 ```
-Visit `http://localhost:8000` for the admin panel (merchants, pay-ins,
-payouts, wallets, all with filters).
+Visit `http://localhost:8000` — you'll be redirected to `/login`. Sign in
+with the credentials `AdminSeeder` printed to the console, then you'll land
+on the admin panel (merchants, pay-ins, payouts, wallets, all with filters).
 
 ### Step 5 — Run the cron
 For local testing, run it on demand:
@@ -328,7 +344,50 @@ and `ERROR` (e.g. `InsufficientBalanceException` during processing).
 
 ---
 
-## 8. Admin Panel
+## 8. Admin Authentication
+
+The back-office panel (`routes/web.php`) is **not** public — every route in
+it is wrapped in `Route::middleware('auth:admin')`, so an unauthenticated
+visitor is redirected to `/login` first.
+
+* **Separate from merchant auth.** Merchants authenticate to the API with
+  an `X-API-KEY` header (`AuthenticateMerchant` middleware, `merchants`
+  table). Staff authenticate to the Blade panel with an email/password
+  session login against a completely different table/model/guard
+  (`admins` table, `App\Models\Admin`, the `admin` guard in
+  `config/auth.php`). One credential can never be used for the other
+  surface.
+* **How it works:**
+  * `database/migrations/2024_01_03_000001_create_admins_table.php` — `id`,
+    `name`, `email` (unique), `password`, `remember_token`.
+  * `App\Models\Admin` — implements `Authenticatable`, hashes `password`
+    via the model cast, hides `password`/`remember_token` from arrays/JSON.
+  * `config/auth.php` — adds the `admin` guard (session driver) + `admins`
+    provider alongside Laravel's stock `web` guard, so it doesn't disturb
+    anything a fresh install already relies on.
+  * `App\Http\Controllers\Auth\AdminAuthController` — `showLoginForm()`,
+    `login()` (validates, `Auth::guard('admin')->attempt()`, regenerates
+    the session), `logout()` (guard logout + session invalidate/regenerate
+    CSRF token).
+  * `resources/views/auth/login.blade.php` — plain email/password form,
+    styled to match the rest of the panel.
+  * `routes/web.php` — `GET/POST /login` (behind `guest:admin` so a
+    logged-in admin can't see the login form again), `POST /logout`
+    (behind `auth:admin`), and every existing admin route now sits inside
+    an `auth:admin` group.
+  * The sidebar / mobile nav (`resources/views/layouts/app.blade.php`)
+    shows the signed-in admin's name and a logout button.
+* **Seeding a login:** `AdminSeeder` (called from `DatabaseSeeder`) creates
+  one admin — `admin@example.com` with a random 14-character password
+  printed to the console on first run. In a real deployment, change that
+  password immediately (or delete the seeded row and create real admins via
+  `php artisan tinker`: `App\Models\Admin::create(['name' => '...', 'email' => '...', 'password' => Hash::make('...')])`).
+* **CSRF & sessions.** Both come from Laravel's stock `web` middleware
+  group (already in `Kernel.php`), so no extra setup is needed beyond a
+  working `APP_KEY` and the default `session`/`cache` config from
+  `laravel new`.
+
+## 9. Admin Panel
 
 Bootstrap 5 UI, no build step required (CDN assets), covering:
 
@@ -343,7 +402,7 @@ Bootstrap 5 UI, no build step required (CDN assets), covering:
 
 ---
 
-## 9. Design Decisions / Notes
+## 10. Design Decisions / Notes
 
 * **Why a separate `wallet_transactions` ledger instead of just mutating
   `wallets.balance`?** It gives a full audit trail, makes the
