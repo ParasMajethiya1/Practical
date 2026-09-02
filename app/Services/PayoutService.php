@@ -16,11 +16,20 @@ class PayoutService
 
     /**
      * Initiate a new payout for a merchant.
+     *
      * A soft balance check is performed up-front so obviously invalid
      * payouts are rejected immediately, in addition to the hard,
-     * lock-protected check performed again at processing time in
-     * PaymentProcessingService (balances can change between initiation
-     * and processing, so both checks are necessary).
+     * lock-protected check performed again inside holdForPayout()
+     * (balances can change between initiation and the lock being
+     * acquired, so both checks are necessary).
+     *
+     * On success, the payout amount is immediately placed ON HOLD via
+     * WalletService::holdForPayout() - it is reserved out of the
+     * merchant's available balance right away, so it cannot be spent
+     * twice by another payout while this one is still PENDING. The hold
+     * is only released back to the merchant (on FAILED) or converted
+     * into a real debit (on SUCCESS) once PaymentProcessingService
+     * resolves the payout - see WalletService for the full lifecycle.
      *
      * @throws InsufficientBalanceException
      */
@@ -28,11 +37,13 @@ class PayoutService
     {
         if (! $this->walletService->hasSufficientBalance($merchant->id, (string) $data["amount"])) {
             throw new InsufficientBalanceException(
-                "Merchant does not have sufficient wallet balance to initiate this payout."
+                "Merchant does not have sufficient available wallet balance to initiate this payout."
             );
         }
 
-        return DB::transaction(function () use ($merchant, $data) {
+        $holdFailure = null;
+
+        $payout = DB::transaction(function () use ($merchant, $data, &$holdFailure) {
             $payout = Payout::create([
                 "transaction_id" => TransactionIdHelper::generate("POT"),
                 "merchant_id" => $merchant->id,
@@ -50,16 +61,44 @@ class PayoutService
                 "meta" => $data["meta"] ?? null,
             ]);
 
+            try {
+                $this->walletService->holdForPayout($payout);
+            } catch (InsufficientBalanceException $e) {
+                // Balance was consumed by a concurrent payout between the
+                // soft check above and the row lock inside holdForPayout().
+                // Fail the payout outright (and keep this whole DB
+                // transaction committing normally) instead of leaving it
+                // PENDING with no funds actually reserved for it.
+                $payout->status = Payout::STATUS_FAILED;
+                $payout->failure_reason = $e->getMessage();
+                $payout->processed_at = now();
+                $payout->save();
+
+                PaymentLogger::error($payout, "HOLD_FAILED", $e->getMessage());
+
+                $holdFailure = $e;
+
+                return $payout;
+            }
+
             PaymentLogger::log(
                 $payout,
                 "INITIATED",
                 Payout::STATUS_PENDING,
-                "Payout initiated for merchant {$merchant->name}",
+                "Payout initiated for merchant {$merchant->name}; {$payout->amount} {$payout->currency} placed on hold",
                 ["request" => $data]
             );
 
             return $payout;
         });
+
+        // Re-thrown OUTSIDE the DB transaction above so the FAILED status
+        // and log entry we just wrote are not rolled back with it.
+        if ($holdFailure) {
+            throw $holdFailure;
+        }
+
+        return $payout;
     }
 
     public function listFor(Merchant $merchant, array $filters = [])

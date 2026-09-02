@@ -14,6 +14,10 @@ class StorePayoutRequest extends FormRequest
     public function rules(): array
     {
         return [
+            // Only used by the web admin form (routes/web.php); the API
+            // resolves the merchant from the api_key middleware instead
+            // and ignores this field.
+            "merchant_id" => ["sometimes", "nullable", "exists:merchants,id"],
             "amount" => ["required", "numeric", "min:0.01", "max:99999999.99"],
             "currency" => ["sometimes", "string", "size:3"],
             "payout_method" => ["nullable", "string", "max:50"],

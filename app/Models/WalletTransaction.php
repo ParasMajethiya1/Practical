@@ -12,6 +12,8 @@ class WalletTransaction extends Model
 
     public const TYPE_CREDIT = "CREDIT";
     public const TYPE_DEBIT = "DEBIT";
+    public const TYPE_HOLD = "HOLD";
+    public const TYPE_RELEASE = "RELEASE";
 
     protected $fillable = [
         "wallet_id",

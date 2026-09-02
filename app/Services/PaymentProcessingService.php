@@ -133,17 +133,23 @@ class PaymentProcessingService
                     $locked->processed_at = now();
                     $locked->save();
 
+                    // Converts the existing HOLD into a real debit - the
+                    // held funds are released and the ledger balance drops
+                    // in the same wallet-locked operation.
                     $this->walletService->debitForPayout($locked);
 
-                    PaymentLogger::log($locked, "PROCESSED", Payout::STATUS_SUCCESS, "Payout processed successfully, wallet debited.");
+                    PaymentLogger::log($locked, "PROCESSED", Payout::STATUS_SUCCESS, "Payout processed successfully, hold released and wallet debited.");
 
                     return "success";
                 } catch (InsufficientBalanceException $e) {
                     // Balance dropped below the required amount between
-                    // initiation and processing - force FAILED instead.
+                    // initiation and processing - force FAILED instead and
+                    // give the hold back to the merchant.
                     $locked->status = Payout::STATUS_FAILED;
                     $locked->failure_reason = $e->getMessage();
                     $locked->save();
+
+                    $this->walletService->releaseHoldForPayout($locked);
 
                     PaymentLogger::error($locked, "PROCESSING_FAILED", $e->getMessage());
 
@@ -151,13 +157,17 @@ class PaymentProcessingService
                 }
             }
 
-            // FAILED
+            // FAILED - give the held amount back to the merchant's
+            // available balance. The real ledger `balance` is never
+            // touched for a failed payout.
             $locked->status = Payout::STATUS_FAILED;
             $locked->processed_at = now();
             $locked->failure_reason = "Randomly resolved to FAILED by the payment processing simulator.";
             $locked->save();
 
-            PaymentLogger::log($locked, "PROCESSED", Payout::STATUS_FAILED, "Payout processing failed.");
+            $this->walletService->releaseHoldForPayout($locked);
+
+            PaymentLogger::log($locked, "PROCESSED", Payout::STATUS_FAILED, "Payout processing failed, hold released back to available balance.");
 
             return "failed";
         });

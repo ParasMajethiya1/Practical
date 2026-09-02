@@ -11,8 +11,9 @@ use Illuminate\Support\Facades\Route;
 | Admin / back-office web routes
 |--------------------------------------------------------------------------
 | Simple Blade-based CRUD/listing pages for internal staff use.
-| Pay-ins and payouts are created via the API only (see routes/api.php);
-| here we only list/view them plus manage merchants and wallets.
+| Pay-ins are created via the API only (see routes/api.php); payouts can
+| also be initiated here for demo/testing purposes (PayoutController@store),
+| which places the amount on hold via PayoutService::initiate().
 */
 
 Route::redirect("/", "/merchants");
@@ -23,6 +24,9 @@ Route::get("payins", [PayinController::class, "index"])->name("payins.index");
 Route::get("payins/{payin}", [PayinController::class, "show"])->name("payins.show");
 
 Route::get("payouts", [PayoutController::class, "index"])->name("payouts.index");
+Route::get("payouts/create", [PayoutController::class, "create"])->name("payouts.create");
+Route::post("payouts", [PayoutController::class, "store"])->name("payouts.store");
+Route::post("payouts/process-pending", [PayoutController::class, "processPending"])->name("payouts.process-pending");
 Route::get("payouts/{payout}", [PayoutController::class, "show"])->name("payouts.show");
 
 Route::get("wallets", [WalletController::class, "index"])->name("wallets.index");
